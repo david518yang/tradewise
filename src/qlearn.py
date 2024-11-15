@@ -38,11 +38,11 @@ class StockTradingEnv:
         return np.concatenate([position, market_features])
 
     def step(self, action):
+        previous_value = self.balance + (self.shares_held * self.current_price)
         self.current_step += 1
         self.current_price = self.df['Close'].iloc[self.current_step]
         
         # Execute action
-        reward = 0
         if action == 1:  # Buy
             shares_to_buy = self.balance // self.current_price
             cost = shares_to_buy * self.current_price * (1 + self.transaction_fee)
@@ -55,9 +55,9 @@ class StockTradingEnv:
                 self.balance += sale_value
                 self.shares_held = 0
 
-        # Calculate reward as change in portfolio value
-        portfolio_value = self.balance + (self.shares_held * self.current_price)
-        reward = portfolio_value - self.initial_balance
+        # Calculate reward as percentage change in portfolio value
+        current_value = self.balance + (self.shares_held * self.current_price)
+        reward = ((current_value - previous_value) / previous_value) * 100  # percentage return
         
         # Check if episode is done
         self.done = self.current_step >= len(self.df) - 1
