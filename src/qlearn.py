@@ -4,8 +4,6 @@ import pandas as pd
 class StockTradingEnv:
     def __init__(self, df):
         self.df = df
-        self.reset()
-        
         self.action_space = 3
         
         # State space: position + 5 market features
@@ -14,55 +12,60 @@ class StockTradingEnv:
         self.initial_balance = 10000
         self.transaction_fee = 0.001
 
-    def reset(self):
-        self.current_step = 0
-        self.balance = 10000
-        self.shares_held = 0
-        self.current_price = self.df['Close'].iloc[0]
+        self.agent_data = {key: {'balance': self.initial_balance / len(df), 'shares_held': 0, 'current_step': 0} for key in df.keys()}
         self.done = False
-        return self._get_state()
+        self.reset()
 
-    def _get_state(self):
-        # Normalize the market features
+    def reset(self):
+        for key, agent_data in self.agent_data.items():
+            agent_data['balance'] = self.initial_balance / len(self.df)
+            agent_data['shares_held'] = 0
+            agent_data['current_step'] = 0
+        self.done = False
+        return {key: self._get_state(key) for key in self.df.keys()}
+
+    def _get_state(self, stock):
+        data = self.df[stock]
+        agent_data = self.agent_data[stock]
         market_features = np.array([
-            self.df['Open'].iloc[self.current_step],
-            self.df['High'].iloc[self.current_step],
-            self.df['Low'].iloc[self.current_step],
-            self.df['Close'].iloc[self.current_step],
-            self.df['Volume'].iloc[self.current_step]
+            data['Open'].iloc[agent_data['current_step']],
+            data['High'].iloc[agent_data['current_step']],
+            data['Low'].iloc[agent_data['current_step']],
+            data['Close'].iloc[agent_data['current_step']],
+            data['Volume'].iloc[agent_data['current_step']]
         ])
-        
-        # Add position information
-        position = np.array([self.shares_held])
-        
+        position = np.array([agent_data['shares_held']])
         return np.concatenate([position, market_features])
 
-    def step(self, action):
-        previous_value = self.balance + (self.shares_held * self.current_price)
-        self.current_step += 1
-        self.current_price = self.df['Close'].iloc[self.current_step]
-        
-        # Execute action
-        if action == 1:  # Buy
-            shares_to_buy = self.balance // self.current_price
-            cost = shares_to_buy * self.current_price * (1 + self.transaction_fee)
-            if cost <= self.balance:
-                self.shares_held += shares_to_buy
-                self.balance -= cost
-        elif action == 2:  # Sell
-            if self.shares_held > 0:
-                sale_value = self.shares_held * self.current_price * (1 - self.transaction_fee)
-                self.balance += sale_value
-                self.shares_held = 0
+    def step(self, stock, action):
+        agent_data = self.agent_data[stock]
+        data = self.df[stock]
 
-        # Calculate reward as percentage change in portfolio value
-        current_value = self.balance + (self.shares_held * self.current_price)
-        reward = ((current_value - previous_value) / previous_value) * 100  # percentage return
-        
-        # Check if episode is done
-        self.done = self.current_step >= len(self.df) - 1
-        
-        return self._get_state(), reward, self.done
+        if agent_data['current_step'] >= len(data) - 1:
+            self.done = True
+            return None, 0, self.done
+
+        previous_value = agent_data['balance'] + (agent_data['shares_held'] * data['Close'].iloc[agent_data['current_step']])
+        agent_data['current_step'] += 1
+        agent_data['current_price'] = data['Close'].iloc[agent_data['current_step']]
+
+        if action == 1:  # Buy
+            shares_to_buy = agent_data['balance'] // agent_data['current_price']
+            cost = shares_to_buy * agent_data['current_price'] * (1 + self.transaction_fee)
+            if cost <= agent_data['balance']:
+                agent_data['shares_held'] += shares_to_buy
+                agent_data['balance'] -= cost
+        elif action == 2:  # Sell
+            if agent_data['shares_held'] > 0:
+                sale_value = agent_data['shares_held'] * agent_data['current_price'] * (1 - self.transaction_fee)
+                agent_data['balance'] += sale_value
+                agent_data['shares_held'] = 0
+
+        current_value = agent_data['balance'] + (agent_data['shares_held'] * agent_data['current_price'])
+        reward = ((current_value - previous_value) / previous_value) * 100
+        self.done = agent_data['current_step'] >= len(data) - 1
+
+        return self._get_state(stock), reward, self.done
 
 class QLearningAgent:
     def __init__(self, state_space, action_space):
