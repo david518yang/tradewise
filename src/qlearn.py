@@ -4,13 +4,16 @@ import pandas as pd
 class StockTradingEnv:
     def __init__(self, df):
         self.df = df
-        self.action_space = 3
+        self.action_space = 9  # [-100%, -75%, -50%, -25%, 0, +25%, +50%, +75%, +100%]
+        self.actions = [-1.0, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1.0]  # Percentage mappings
         
         # State space: position + 5 market features
         self.state_space = 6
         
         self.initial_balance = 10000
         self.transaction_fee = 0.001
+        # Minimum position size is 10% of initial balance per stock
+        self.min_position = self.initial_balance * 0.1
 
         self.agent_data = {key: {'balance': self.initial_balance / len(df), 'shares_held': 0, 'current_step': 0} for key in df.keys()}
         self.done = False
@@ -49,17 +52,34 @@ class StockTradingEnv:
         agent_data['current_step'] += 1
         agent_data['current_price'] = data['Close'].iloc[agent_data['current_step']]
 
-        if action == 1:  # Buy
-            shares_to_buy = agent_data['balance'] // agent_data['current_price']
-            cost = shares_to_buy * agent_data['current_price'] * (1 + self.transaction_fee)
-            if cost <= agent_data['balance']:
-                agent_data['shares_held'] += shares_to_buy
+        # Calculate position change based on current stock holdings
+        current_stock_value = agent_data['shares_held'] * agent_data['current_price']
+        target_percentage = self.actions[action]
+        
+        # Calculate target stock value based on percentage change of current position
+        if current_stock_value == 0 and target_percentage > 0:
+            # Opening new position - use minimum position size as base
+            target_stock_value = self.min_position * (1 + target_percentage)
+        else:
+            target_stock_value = current_stock_value * (1 + target_percentage)
+        
+        # Calculate shares to trade
+        shares_to_trade = (target_stock_value - current_stock_value) / agent_data['current_price']
+        
+        if shares_to_trade > 0:  # Buy
+            cost = shares_to_trade * agent_data['current_price'] * (1 + self.transaction_fee)
+            # Check if we have enough balance and the position would be above minimum
+            if cost <= agent_data['balance'] and target_stock_value >= self.min_position:
+                agent_data['shares_held'] += shares_to_trade
                 agent_data['balance'] -= cost
-        elif action == 2:  # Sell
-            if agent_data['shares_held'] > 0:
-                sale_value = agent_data['shares_held'] * agent_data['current_price'] * (1 - self.transaction_fee)
+        elif shares_to_trade < 0:  # Sell
+            shares_to_sell = min(abs(shares_to_trade), agent_data['shares_held'])
+            # If we're not selling everything, ensure remaining position is above minimum
+            remaining_value = (agent_data['shares_held'] - shares_to_sell) * agent_data['current_price']
+            if remaining_value == 0 or remaining_value >= self.min_position:
+                sale_value = shares_to_sell * agent_data['current_price'] * (1 - self.transaction_fee)
                 agent_data['balance'] += sale_value
-                agent_data['shares_held'] = 0
+                agent_data['shares_held'] -= shares_to_sell
 
         current_value = agent_data['balance'] + (agent_data['shares_held'] * agent_data['current_price'])
         reward = ((current_value - previous_value) / previous_value) * 100
