@@ -1,6 +1,6 @@
 from sklearn.model_selection import train_test_split
 
-def split_data(aapl, googl, msft, test_size=0.2, random_state=42):
+def split_data(qqq, spy, voo, test_size=0.2, random_state=42):
     def split_df(df, test_size):
         split_idx = int(len(df) * (1 - test_size))
         train = df.iloc[:split_idx]
@@ -8,8 +8,8 @@ def split_data(aapl, googl, msft, test_size=0.2, random_state=42):
         return train, test
     
     # split the data
-    aapl_train, aapl_test = split_df(aapl, test_size)
-    googl_train, googl_test = split_df(googl, test_size)
-    msft_train, msft_test = split_df(msft, test_size)
+    qqq_train, qqq_test = split_df(qqq, test_size)
+    spy_train, spy_test = split_df(spy, test_size)
+    voo_train, voo_test = split_df(voo, test_size)
 
-    return (aapl_train, aapl_test), (googl_train, googl_test), (msft_train, msft_test)
+    return (qqq_train, qqq_test), (spy_train, spy_test), (voo_train, voo_test)

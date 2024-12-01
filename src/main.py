@@ -86,23 +86,26 @@ def calculate_metrics(portfolio_values, initial_balance):
     return metrics
 
 def plot_results(portfolio_values, test_data, actions_taken):
-    for stock, values in portfolio_values.items():
-        plt.figure(figsize=(15, 10))
-
+    for stock in portfolio_values.keys():
+        plt.figure(figsize=(12, 8))
+        
         # Plot portfolio value
         plt.subplot(2, 1, 1)
-        plt.plot(values, label="Portfolio Value", color="blue")
+        plt.plot(portfolio_values[stock], label="Portfolio Value", color="blue")
         plt.title(f"{stock} Portfolio Value Over Time")
         plt.xlabel("Trading Steps")
         plt.ylabel("Portfolio Value ($)")
         plt.legend()
         plt.grid(True)
-
+        
         # Plot stock price and actions
         plt.subplot(2, 1, 2)
         stock_prices = test_data[stock]['Close'].values
         plt.plot(stock_prices, label="Stock Price", color="orange", alpha=0.7)
-        for i, action in enumerate(actions_taken[stock]):
+        
+        # Ensure actions_taken length matches stock_prices length
+        actions = actions_taken[stock][:len(stock_prices)]
+        for i, action in enumerate(actions):
             if action == 1:  # Buy
                 plt.scatter(i, stock_prices[i], color="green", marker="^", label="Buy" if i == 0 else "")
             elif action == 2:  # Sell
@@ -112,15 +115,15 @@ def plot_results(portfolio_values, test_data, actions_taken):
         plt.ylabel("Stock Price ($)")
         plt.legend()
         plt.grid(True)
-
+        
         plt.tight_layout()
-        plt.show(block = True)
+        plt.show(block=True)
 
 # Main workflow
-aapl, googl, msft = load_data()
-(train_aapl, test_aapl), (train_googl, test_googl), (train_msft, test_msft) = split_data(aapl, googl, msft)
-train_data = {'AAPL': train_aapl, 'GOOGL': train_googl, 'MSFT': train_msft}
-test_data = {'AAPL': test_aapl, 'GOOGL': test_googl, 'MSFT': test_msft}
+qqq, spy, voo = load_data()
+(train_qqq, test_qqq), (train_spy, test_spy), (train_voo, test_voo) = split_data(qqq, spy, voo)
+train_data = {'QQQ': train_qqq, 'SPY': train_spy, 'VOO': train_voo}
+test_data = {'QQQ': test_qqq, 'SPY': test_spy, 'VOO': test_voo}
 
 env = StockTradingEnv(train_data)
 print("Training agents...")
