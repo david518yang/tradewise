@@ -1,6 +1,7 @@
 from load_data import load_data
 from split import split_data
 from qlearn import StockTradingEnv, QLearningAgent
+from analysis import FeatureAnalyzer
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -126,7 +127,13 @@ train_data = {'QQQ': train_qqq, 'SPY': train_spy, 'VOO': train_voo}
 test_data = {'QQQ': test_qqq, 'SPY': test_spy, 'VOO': test_voo}
 
 env = StockTradingEnv(train_data)
-print("Training agents...")
+
+# Analyze features before training
+print("\nAnalyzing features...")
+analyzer = FeatureAnalyzer(env)
+rf_importance, entropy_importance = analyzer.analyze_features(episodes=10)
+
+print("\nTraining agents...")
 agents = train_agents(env, episodes=1000)
 
 print("\nEvaluating agents...")
