@@ -14,7 +14,7 @@ class StockTradingEnv:
         
         self.initial_balance = 10000
         self.transaction_fee = 0.001  # 0.1% transaction fee
-        self.min_trade_pct = 0.4  # Minimum trade size as percentage of portfolio
+        self.min_trade_pct = 0.2  # Reduced minimum trade size to 20% of portfolio
         
         # Simplified agent data
         self.agent_data = {
@@ -24,7 +24,8 @@ class StockTradingEnv:
                 'current_step': 0,
                 'entry_price': None,
                 'last_action_step': 0,
-                'last_position': 0
+                'last_position': 0,
+                'max_value': self.initial_balance / len(df)  # Track maximum portfolio value
             } for key in df.keys()
         }
         self.done = False
@@ -38,75 +39,118 @@ class StockTradingEnv:
             agent_data['entry_price'] = None
             agent_data['last_action_step'] = 0
             agent_data['last_position'] = 0
+            agent_data['max_value'] = self.initial_balance / len(self.df)
         self.done = False
         return {key: self._get_state(key) for key in self.df.keys()}
 
     def _calculate_technical_indicators(self, data, current_step):
-        # Calculate RSI
-        delta = data['Close'].diff().dropna()
-        up_days = delta.copy(), up_days[delta > 0] = delta[delta > 0]
-        down_days = delta.copy(), down_days[delta < 0] = -delta[delta < 0]
-        RS_up = up_days.ewm(com=13 - 1, min_periods=0, adjust=False).mean()
-        RS_down = down_days.ewm(com=13 - 1, min_periods=0, adjust=False).mean().abs()
-        RS = RS_up / RS_down
-        RSI = 100.0 - (100.0 / (1.0 + RS))
-        rsi = RSI.iloc[current_step] if not np.isnan(RSI.iloc[current_step]) else 50.0
+        try:
+            # Calculate RSI
+            delta = data['Close'].diff()
+            up_days = delta.copy()
+            down_days = delta.copy()
+            up_days[delta <= 0] = 0
+            down_days[delta >= 0] = 0
+            
+            # Calculate exponential moving averages
+            RS_up = up_days.ewm(com=13, min_periods=1, adjust=False).mean()
+            RS_down = abs(down_days).ewm(com=13, min_periods=1, adjust=False).mean()
+            
+            # Calculate RSI
+            RS = RS_up / RS_down
+            RSI = 100.0 - (100.0 / (1.0 + RS))
+            
+            # Get current values with bounds checking
+            if 0 <= current_step < len(RSI):
+                current_rsi = RSI.iloc[current_step]
+                if np.isnan(current_rsi):
+                    current_rsi = 50.0
+            else:
+                current_rsi = 50.0
 
-        # Calculate MACD
-        ema_12 = data['Close'].ewm(span=12, adjust=False).mean()
-        ema_26 = data['Close'].ewm(span=26, adjust=False).mean()
-        macd = ema_12 - ema_26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        macd_hist = macd - signal
-        macd = macd.iloc[current_step] if not np.isnan(macd.iloc[current_step]) else 0.0
-        macd_hist = macd_hist.iloc[current_step] if not np.isnan(macd_hist.iloc[current_step]) else 0.0
+            # Calculate MACD
+            exp1 = data['Close'].ewm(span=12, adjust=False, min_periods=1).mean()
+            exp2 = data['Close'].ewm(span=26, adjust=False, min_periods=1).mean()
+            macd = exp1 - exp2
+            signal = macd.ewm(span=9, adjust=False, min_periods=1).mean()
+            macd_hist = macd - signal
+            
+            # Get current MACD values with bounds checking
+            if 0 <= current_step < len(macd):
+                current_macd = macd.iloc[current_step]
+                current_macd_hist = macd_hist.iloc[current_step]
+                if np.isnan(current_macd):
+                    current_macd = 0.0
+                if np.isnan(current_macd_hist):
+                    current_macd_hist = 0.0
+            else:
+                current_macd = 0.0
+                current_macd_hist = 0.0
 
-        return rsi, macd, macd_hist
+            return current_rsi, current_macd, current_macd_hist
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators: {e}")
+            return 50.0, 0.0, 0.0  # Return neutral values on error
 
     def _calculate_etf_features(self, data, current_step):
-        # Relative Volume Analysis
-        volume = data['Volume'].iloc[current_step]
-        avg_volume_20d = data['Volume'].iloc[max(0, current_step-20):current_step+1].mean()
-        relative_volume = volume / avg_volume_20d if avg_volume_20d > 0 else 1.0
+        try:
+            # Ensure current_step is within bounds
+            if current_step >= len(data):
+                return np.zeros(5)  # Return zeros for all features if out of bounds
+            
+            # Relative Volume Analysis
+            volume = data['Volume'].iloc[current_step]
+            start_idx = max(0, current_step-20)
+            avg_volume_20d = data['Volume'].iloc[start_idx:current_step+1].mean()
+            relative_volume = volume / avg_volume_20d if avg_volume_20d > 0 else 1.0
 
-        # Price Momentum and Volatility
-        returns_20d = data['Close'].pct_change(20).iloc[current_step]
-        volatility_20d = data['Close'].pct_change().iloc[max(0, current_step-20):current_step+1].std()
-        
-        # Money Flow Index (MFI) - Volume-weighted RSI
-        typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-        money_flow = typical_price * data['Volume']
-        
-        delta_money_flow = money_flow.diff()
-        positive_flow = delta_money_flow.where(delta_money_flow > 0, 0).rolling(window=14).sum()
-        negative_flow = (-delta_money_flow.where(delta_money_flow < 0, 0)).rolling(window=14).sum()
-        
-        mfi_ratio = positive_flow / negative_flow
-        mfi = 100 - (100 / (1 + mfi_ratio))
-        current_mfi = mfi.iloc[current_step] if not np.isnan(mfi.iloc[current_step]) else 50.0
+            # Price Momentum and Volatility
+            returns_20d = 0.0
+            volatility_20d = 0.0
+            if current_step >= 20:
+                returns_20d = (data['Close'].iloc[current_step] / data['Close'].iloc[current_step-20]) - 1
+                volatility_20d = data['Close'].pct_change().iloc[current_step-20:current_step+1].std()
+            
+            # Money Flow Index (MFI)
+            typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+            money_flow = typical_price * data['Volume']
+            
+            delta_money_flow = money_flow.diff()
+            pos_flow = delta_money_flow.copy()
+            neg_flow = delta_money_flow.copy()
+            pos_flow[delta_money_flow <= 0] = 0
+            neg_flow[delta_money_flow >= 0] = 0
+            
+            pos_sum = pos_flow.rolling(window=14, min_periods=1).sum()
+            neg_sum = abs(neg_flow.rolling(window=14, min_periods=1).sum())
+            
+            mfi = 100 - (100 / (1 + (pos_sum / neg_sum)))
+            current_mfi = mfi.iloc[current_step] if not np.isnan(mfi.iloc[current_step]) else 50.0
 
-        # Bollinger Band Position
-        rolling_mean = data['Close'].rolling(window=20).mean()
-        rolling_std = data['Close'].rolling(window=20).std()
-        current_price = data['Close'].iloc[current_step]
-        
-        if current_step >= 20:
-            current_mean = rolling_mean.iloc[current_step]
-            current_std = rolling_std.iloc[current_step]
-            if current_std != 0:
-                bb_position = (current_price - current_mean) / (2 * current_std)
-            else:
-                bb_position = 0
-        else:
-            bb_position = 0
+            # Bollinger Band Position
+            rolling_mean = data['Close'].rolling(window=20, min_periods=1).mean()
+            rolling_std = data['Close'].rolling(window=20, min_periods=1).std()
+            current_price = data['Close'].iloc[current_step]
+            
+            bb_position = 0.0
+            if not np.isnan(rolling_mean.iloc[current_step]) and not np.isnan(rolling_std.iloc[current_step]):
+                current_mean = rolling_mean.iloc[current_step]
+                current_std = rolling_std.iloc[current_step]
+                if current_std != 0:
+                    bb_position = (current_price - current_mean) / (2 * current_std)
 
-        return np.array([
-            float(relative_volume - 1),  # Normalized relative volume
-            float(returns_20d),          # 20-day returns
-            float(volatility_20d),       # 20-day volatility
-            float((current_mfi - 50) / 50),  # Normalized MFI
-            float(bb_position),          # Bollinger Band position (-1 to 1)
-        ])
+            return np.array([
+                float(relative_volume - 1),  # Normalized relative volume
+                float(returns_20d),          # 20-day returns
+                float(volatility_20d),       # 20-day volatility
+                float((current_mfi - 50) / 50),  # Normalized MFI
+                float(bb_position),          # Bollinger Band position (-1 to 1)
+            ])
+            
+        except Exception as e:
+            print(f"Error calculating ETF features: {e}")
+            return np.zeros(5)  # Return zeros for all features on error
 
     def _calculate_correlation_features(self, stock):
         current_step = self.agent_data[stock]['current_step']
@@ -207,37 +251,46 @@ class StockTradingEnv:
         # Calculate position change based on current stock holdings
         current_stock_value = agent_data['shares_held'] * agent_data['current_price']
         target_percentage = self.position_sizes[action]
+        total_value = agent_data['balance'] + current_stock_value
         
-        # Calculate target stock value based on percentage change of current position
-        if current_stock_value == 0 and target_percentage > 0:
-            # Opening new position - use minimum position size as base
-            target_stock_value = self.min_trade_pct * (agent_data['balance'] + current_stock_value)
-        else:
-            target_stock_value = current_stock_value * (1 + target_percentage)
+        # Calculate target stock value based on total portfolio value
+        target_stock_value = total_value * target_percentage if target_percentage > 0 else 0
         
         # Calculate shares to trade
         shares_to_trade = (target_stock_value - current_stock_value) / agent_data['current_price']
         
+        # Track transaction costs
+        transaction_cost = 0
+        
         if shares_to_trade > 0:  # Buy
             cost = shares_to_trade * agent_data['current_price'] * (1 + self.transaction_fee)
-            # Check if we have enough balance and the position would be above minimum
-            if cost <= agent_data['balance'] and target_stock_value >= self.min_trade_pct * (agent_data['balance'] + current_stock_value):
+            if cost <= agent_data['balance']:
                 agent_data['shares_held'] += shares_to_trade
                 agent_data['balance'] -= cost
                 agent_data['entry_price'] = agent_data['current_price']
+                transaction_cost = cost * self.transaction_fee
         elif shares_to_trade < 0:  # Sell
             shares_to_sell = min(abs(shares_to_trade), agent_data['shares_held'])
-            # If we're not selling everything, ensure remaining position is above minimum
-            remaining_value = (agent_data['shares_held'] - shares_to_sell) * agent_data['current_price']
-            if remaining_value == 0 or remaining_value >= self.min_trade_pct * (agent_data['balance'] + current_stock_value):
-                sale_value = shares_to_sell * agent_data['current_price'] * (1 - self.transaction_fee)
-                agent_data['balance'] += sale_value
-                agent_data['shares_held'] -= shares_to_sell
-                if agent_data['shares_held'] == 0:
-                    agent_data['entry_price'] = None
+            sale_value = shares_to_sell * agent_data['current_price'] * (1 - self.transaction_fee)
+            agent_data['balance'] += sale_value
+            agent_data['shares_held'] -= shares_to_sell
+            transaction_cost = sale_value * self.transaction_fee
+            if agent_data['shares_held'] == 0:
+                agent_data['entry_price'] = None
 
         current_value = agent_data['balance'] + (agent_data['shares_held'] * agent_data['current_price'])
-        reward = ((current_value - previous_value) / previous_value) * 100
+        
+        # Update maximum portfolio value
+        agent_data['max_value'] = max(agent_data['max_value'], current_value)
+        
+        # Calculate reward components
+        value_change = (current_value - previous_value) / previous_value
+        drawdown = (agent_data['max_value'] - current_value) / agent_data['max_value']
+        
+        # Penalize excessive trading and drawdowns
+        reward = value_change - (transaction_cost / previous_value) - (drawdown * 0.1)
+        reward *= 100  # Scale reward for better learning
+        
         self.done = agent_data['current_step'] >= len(data) - 1
 
         return self._get_state(stock), reward, self.done
@@ -247,11 +300,11 @@ class QLearningAgent:
         self.state_space = state_space
         self.action_space = action_space
         self.q_table = {}
-        self.learning_rate = 0.01
-        self.gamma = 0.95
+        self.learning_rate = 0.1  # Increased learning rate
+        self.gamma = 0.99  # Increased future reward importance
         self.epsilon = 1.0
-        self.epsilon_decay = 0.995
-        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.9995  # Slower epsilon decay
+        self.epsilon_min = 0.05  # Increased minimum exploration
 
     def get_action(self, state):
         state_key = tuple(state.round(4))
