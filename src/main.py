@@ -131,7 +131,7 @@ env = StockTradingEnv(train_data)
 # Analyze features before training
 print("\nAnalyzing features...")
 analyzer = FeatureAnalyzer(env)
-rf_importance, entropy_importance = analyzer.analyze_features(episodes=10)
+rf_importance, entropy_importance, states_dict = analyzer.analyze_features(episodes=10, show_plots=False)
 
 print("\nTraining agents...")
 agents = train_agents(env, episodes=1000)
@@ -148,5 +148,13 @@ for stock, metric_data in metrics.items():
     for metric, value in metric_data.items():
         print(f"  {metric}: {value}")
 
-print("\nPlotting results...")
+print("\nGenerating all visualizations...")
+# Show feature analysis plots
+analyzer.visualize_feature_importance(rf_importance, 'Random Forest')
+analyzer.visualize_feature_importance(entropy_importance, 'Entropy')
+for stock in states_dict.keys():
+    analyzer.visualize_feature_correlations(stock)
+    analyzer.visualize_state_features(stock)
+
+# Show performance plots
 plot_results(portfolio_values, test_data, actions_taken)

@@ -136,24 +136,27 @@ class FeatureAnalyzer:
         plt.tight_layout()
         plt.show()
     
-    def analyze_features(self, episodes=100):
+    def analyze_features(self, episodes=100, show_plots=True):
         print("Collecting state and reward data...")
         states_dict, rewards_dict = self.collect_states_and_rewards(episodes)
         
         print("\nCalculating feature importance using Random Forest...")
         rf_importance = self.calculate_feature_importance_rf(states_dict, rewards_dict)
-        self.visualize_feature_importance(rf_importance, 'Random Forest')
         
         print("\nCalculating feature importance using Entropy...")
         entropy_importance = self.calculate_feature_importance_entropy(states_dict)
-        self.visualize_feature_importance(entropy_importance, 'Entropy')
         
-        print("\nVisualizing feature correlations...")
-        for stock in states_dict.keys():
-            self.visualize_feature_correlations(stock)
+        if show_plots:
+            print("\nGenerating visualizations...")
+            self.visualize_feature_importance(rf_importance, 'Random Forest')
+            self.visualize_feature_importance(entropy_importance, 'Entropy')
+            
+            print("\nVisualizing feature correlations...")
+            for stock in states_dict.keys():
+                self.visualize_feature_correlations(stock)
+            
+            print("\nVisualizing state features...")
+            for stock in states_dict.keys():
+                self.visualize_state_features(stock)
         
-        print("\nVisualizing state features...")
-        for stock in states_dict.keys():
-            self.visualize_state_features(stock)
-        
-        return rf_importance, entropy_importance
+        return rf_importance, entropy_importance, states_dict
