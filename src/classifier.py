@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from load_data import load_data
 from split import split_data
+import matplotlib.pyplot as plt
 
 def prepare_features(df):
     features = df[['Returns', 'MA5', 'MA20', 'RSI', 'MACD', 'Signal_Line', 
@@ -21,7 +22,7 @@ def train_classifier(X_train, y_train):
     clf.fit(X_train, y_train)
     return clf
 
-def evaluate_performance(clf, test_df, initial_balance=10000):
+def evaluate_performance(clf, test_df, initial_balance=3333.33):
     features = prepare_features(test_df)
     predictions = clf.predict(features)
     
@@ -71,6 +72,10 @@ def evaluate_performance(clf, test_df, initial_balance=10000):
         drawdown = (peak - value) / peak
         max_drawdown = max(max_drawdown, drawdown)
     
+    # Calculate Sharpe Ratio
+    daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+    sharpe_ratio = np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252)  # Annualized
+    
     print(f"\nPerformance Metrics:")
     print(f"Initial Balance: ${initial_balance:,.2f}")
     print(f"Final Portfolio Value: ${final_portfolio_value:,.2f}")
@@ -78,8 +83,48 @@ def evaluate_performance(clf, test_df, initial_balance=10000):
     print(f"Buy & Hold Return: {buy_hold_return:.2f}%")
     print(f"Maximum Drawdown: {max_drawdown*100:.2f}%")
     print(f"Outperformance vs Buy & Hold: {total_return - buy_hold_return:.2f}%")
+    print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
     
     return portfolio_values, buy_and_hold_values
+
+def plot_results(test_df, portfolio_values, predictions, title):
+    steps = range(len(test_df))
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10))
+    fig.suptitle(title)
+    
+    # Plot 1: Portfolio Value
+    ax1.plot(steps, portfolio_values, label='Portfolio Value', color='blue')
+    ax1.set_title('Portfolio Value Over Time')
+    ax1.set_xlabel('Trading Steps')
+    ax1.set_ylabel('Portfolio Value ($)')
+    ax1.legend()
+    ax1.grid(True)
+    
+    # Plot 2: Stock Price with Buy/Sell Signals
+    stock_prices = test_df['Close'].values
+    ax2.plot(steps, stock_prices, label='Stock Price', color='black', alpha=0.7)
+    
+    # Add buy/sell markers
+    buys = [i for i, pred in enumerate(predictions) if pred == 1]
+    sells = [i for i, pred in enumerate(predictions) if pred == -1]
+    
+    if buys:  # Plot buy signals
+        ax2.scatter(buys, stock_prices[buys], color='green', marker='^', 
+                   label='Buy', s=100, alpha=0.7)
+    if sells:  # Plot sell signals
+        ax2.scatter(sells, stock_prices[sells], color='red', marker='v', 
+                   label='Sell', s=100, alpha=0.7)
+    
+    ax2.set_title('Stock Price with Trading Signals')
+    ax2.set_xlabel('Trading Steps')
+    ax2.set_ylabel('Stock Price ($)')
+    ax2.legend()
+    ax2.grid(True)
+    
+    plt.tight_layout()
+    return fig
 
 def main():
     # Load and split data
@@ -94,15 +139,19 @@ def main():
     print("Training classifier...")
     clf = train_classifier(X_train, y_train)
 
-    # Evaluate on each test set
-    print("\nQQQ Performance:")
-    qqq_portfolio, qqq_buy_hold = evaluate_performance(clf, qqq_test)
+    # Evaluate and plot for each ETF
+    etfs = [('QQQ', qqq_test), ('SPY', spy_test), ('VOO', voo_test)]
     
-    print("\nSPY Performance:")
-    spy_portfolio, spy_buy_hold = evaluate_performance(clf, spy_test)
-    
-    print("\nVOO Performance:")
-    voo_portfolio, voo_buy_hold = evaluate_performance(clf, voo_test)
+    for name, test_df in etfs:
+        print(f"\n{name} Performance:")
+        features = prepare_features(test_df)
+        predictions = clf.predict(features)
+        portfolio_values, _ = evaluate_performance(clf, test_df)
+        
+        # Create and save plot
+        fig = plot_results(test_df, portfolio_values, predictions, f'{name} Trading Results')
+        plt.savefig(f'{name}_trading_results.png')
+        plt.close(fig)
 
 if __name__ == "__main__":
     main()
