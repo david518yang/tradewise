@@ -2,12 +2,12 @@ import pandas as pd
 
 def load_data():
     # Reads and preprocesses the data
-    aapl = pd.read_csv('../data/aapl.csv')
-    googl = pd.read_csv('../data/googl.csv')
-    msft = pd.read_csv('../data/msft.csv')
+    qqq = pd.read_csv('../data/qqq.csv')
+    spy = pd.read_csv('../data/spy.csv')
+    voo = pd.read_csv('../data/voo.csv')
     
-    for df in [aapl, googl, msft]:
+    for df in [qqq, spy, voo]:
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
     
-    return aapl, googl, msft
+    return qqq, spy, voo
