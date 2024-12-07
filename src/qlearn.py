@@ -1,354 +1,409 @@
+# qlearn.py
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+import random
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
+
+class DQNAgent(nn.Module):
+    def __init__(self, state_size, action_size, hidden_size=256):
+        super(DQNAgent, self).__init__()
+        self.state_size = state_size
+        self.action_size = action_size
+        
+        # Enhanced network with batch normalization and dropout
+        self.online_network = nn.Sequential(
+            nn.Linear(state_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(hidden_size, action_size)
+        )
+        
+        # Target network
+        self.target_network = nn.Sequential(
+            nn.Linear(state_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(hidden_size, action_size)
+        )
+        self.target_network.load_state_dict(self.online_network.state_dict())
+        self.target_network.eval()  # Set target network to evaluation mode
+        
+        # Hyperparameters
+        self.memory = deque(maxlen=50000)
+        self.batch_size = 128
+        self.gamma = 0.99  # Encourage long-term rewards
+        self.epsilon = 1.0
+        self.epsilon_min = 0.01
+        self.learning_rate = 0.0005
+        self.epsilon_decay_step = (1.0 - self.epsilon_min) / 100  # Linear decay over 100 episodes
+        
+        self.optimizer = optim.Adam(self.online_network.parameters(), lr=self.learning_rate, weight_decay=1e-5)
+        self.criterion = nn.SmoothL1Loss()
+        
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.online_network.to(self.device)
+        self.target_network.to(self.device)
+        self.train_steps = 0
+        self.update_target_every = 200  # Update target network every N steps
+        
+        # TensorBoard writer
+        self.writer = SummaryWriter('runs/dqn_training')
+    
+    def decay_epsilon(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon -= self.epsilon_decay_step
+            if self.epsilon < self.epsilon_min:
+                self.epsilon = self.epsilon_min
+    
+    def forward(self, state):
+        return self.online_network(state)
+    
+    def update_target_network(self):
+        self.target_network.load_state_dict(self.online_network.state_dict())
+    
+    def act(self, state, is_eval=False):
+        if not is_eval and random.random() <= self.epsilon:
+            return random.randrange(self.action_size)
+        
+        state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        self.online_network.eval()  # Set to evaluation mode for action selection
+        with torch.no_grad():
+            action_values = self.online_network(state_t)
+        self.online_network.train()  # Revert back to training mode
+        return torch.argmax(action_values).item()
+    
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+    
+    def replay(self):
+        if len(self.memory) < self.batch_size:
+            return
+        
+        # Sample a mini-batch from memory
+        mini_batch = random.sample(self.memory, self.batch_size)
+        
+        # Convert to numpy arrays
+        states = np.array([sample[0] for sample in mini_batch], dtype=np.float32)
+        actions = np.array([sample[1] for sample in mini_batch], dtype=np.int64)
+        rewards = np.array([sample[2] for sample in mini_batch], dtype=np.float32)
+        next_states = np.array([sample[3] for sample in mini_batch], dtype=np.float32)
+        dones = np.array([sample[4] for sample in mini_batch], dtype=np.float32)
+        
+        # Convert to tensors
+        states = torch.from_numpy(states).to(self.device)
+        actions = torch.from_numpy(actions).unsqueeze(1).to(self.device)
+        rewards = torch.from_numpy(rewards).to(self.device)
+        next_states = torch.from_numpy(next_states).to(self.device)
+        dones = torch.from_numpy(dones).to(self.device)
+        
+        # Current Q values
+        current_q = self.online_network(states).gather(1, actions).squeeze()
+        
+        # Compute target Q values using target network
+        with torch.no_grad():
+            next_q = self.target_network(next_states).max(1)[0]
+            target = rewards + (1 - dones) * self.gamma * next_q
+        
+        # Compute loss
+        loss = self.criterion(current_q, target)
+        
+        # Optimize the model
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.online_network.parameters(), 1.0)
+        self.optimizer.step()
+        
+        # Log loss to TensorBoard
+        self.writer.add_scalar('Loss', loss.item(), self.train_steps)
+        
+        # Update target network periodically
+        if self.train_steps % self.update_target_every == 0:
+            self.update_target_network()
+        
+        self.train_steps += 1
+    
+    def close_writer(self):
+        self.writer.close()
 
 class StockTradingEnv:
     def __init__(self, df):
-        self.df = df
+        self.data_dict = df  # Dictionary of DataFrames for each stock
+        self.action_space = 5  # Simplified actions: Buy 25%, Buy 50%, Sell 25%, Sell 50%, Hold
+        self.action_size = self.action_space
+        self.initial_balance = 3333.33
+        self.state_space = 5  # [Close_scaled, Volume_scaled, RSI_scaled, MACD_scaled, Signal_Line_scaled]
         
-        # Simplified action space: Strong Sell, Sell, Hold, Buy, Strong Buy
-        self.position_sizes = np.array([-1.0, -0.5, 0, 0.5, 1.0])  # 5 actions
-        self.action_space = len(self.position_sizes)
-        
-        # Updated state space size: original features + ETF features + correlations
-        self.state_space = 9 + 5 + (len(df) - 1)  # Original + ETF features + Correlations
-        
-        self.initial_balance = 10000
-        self.transaction_fee = 0.001  # 0.1% transaction fee
-        self.min_trade_pct = 0.2  # Reduced minimum trade size to 20% of portfolio
-        
-        # Simplified agent data
-        self.agent_data = {
-            key: {
-                'balance': self.initial_balance / len(df),
-                'shares_held': 0,
-                'current_step': 0,
-                'entry_price': None,
-                'last_action_step': 0,
-                'last_position': 0,
-                'max_value': self.initial_balance / len(df)  # Track maximum portfolio value
-            } for key in df.keys()
-        }
-        self.done = False
+        self.transaction_fee = 0.001
+        self.holding_penalty = 0.0002
         self.reset()
-
-    def reset(self):
-        for key, agent_data in self.agent_data.items():
-            agent_data['balance'] = self.initial_balance / len(self.df)
-            agent_data['shares_held'] = 0
-            agent_data['current_step'] = 0
-            agent_data['entry_price'] = None
-            agent_data['last_action_step'] = 0
-            agent_data['last_position'] = 0
-            agent_data['max_value'] = self.initial_balance / len(self.df)
-        self.done = False
-        return {key: self._get_state(key) for key in self.df.keys()}
-
-    def _calculate_technical_indicators(self, data, current_step):
-        try:
-            # Calculate RSI
-            delta = data['Close'].diff()
-            up_days = delta.copy()
-            down_days = delta.copy()
-            up_days[delta <= 0] = 0
-            down_days[delta >= 0] = 0
-            
-            # Calculate exponential moving averages
-            RS_up = up_days.ewm(com=13, min_periods=1, adjust=False).mean()
-            RS_down = abs(down_days).ewm(com=13, min_periods=1, adjust=False).mean()
-            
-            # Calculate RSI
-            RS = RS_up / RS_down
-            RSI = 100.0 - (100.0 / (1.0 + RS))
-            
-            # Get current values with bounds checking
-            if 0 <= current_step < len(RSI):
-                current_rsi = RSI.iloc[current_step]
-                if np.isnan(current_rsi):
-                    current_rsi = 50.0
-            else:
-                current_rsi = 50.0
-
-            # Calculate MACD
-            exp1 = data['Close'].ewm(span=12, adjust=False, min_periods=1).mean()
-            exp2 = data['Close'].ewm(span=26, adjust=False, min_periods=1).mean()
-            macd = exp1 - exp2
-            signal = macd.ewm(span=9, adjust=False, min_periods=1).mean()
-            macd_hist = macd - signal
-            
-            # Get current MACD values with bounds checking
-            if 0 <= current_step < len(macd):
-                current_macd = macd.iloc[current_step]
-                current_macd_hist = macd_hist.iloc[current_step]
-                if np.isnan(current_macd):
-                    current_macd = 0.0
-                if np.isnan(current_macd_hist):
-                    current_macd_hist = 0.0
-            else:
-                current_macd = 0.0
-                current_macd_hist = 0.0
-
-            return current_rsi, current_macd, current_macd_hist
-            
-        except Exception as e:
-            print(f"Error calculating technical indicators: {e}")
-            return 50.0, 0.0, 0.0  # Return neutral values on error
-
-    def _calculate_etf_features(self, data, current_step):
-        try:
-            # Ensure current_step is within bounds
-            if current_step >= len(data):
-                return np.zeros(5)  # Return zeros for all features if out of bounds
-            
-            # Relative Volume Analysis
-            volume = data['Volume'].iloc[current_step]
-            start_idx = max(0, current_step-20)
-            avg_volume_20d = data['Volume'].iloc[start_idx:current_step+1].mean()
-            relative_volume = volume / avg_volume_20d if avg_volume_20d > 0 else 1.0
-
-            # Price Momentum and Volatility
-            returns_20d = 0.0
-            volatility_20d = 0.0
-            if current_step >= 20:
-                returns_20d = (data['Close'].iloc[current_step] / data['Close'].iloc[current_step-20]) - 1
-                volatility_20d = data['Close'].pct_change().iloc[current_step-20:current_step+1].std()
-            
-            # Money Flow Index (MFI)
-            typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-            money_flow = typical_price * data['Volume']
-            
-            delta_money_flow = money_flow.diff()
-            pos_flow = delta_money_flow.copy()
-            neg_flow = delta_money_flow.copy()
-            pos_flow[delta_money_flow <= 0] = 0
-            neg_flow[delta_money_flow >= 0] = 0
-            
-            pos_sum = pos_flow.rolling(window=14, min_periods=1).sum()
-            neg_sum = abs(neg_flow.rolling(window=14, min_periods=1).sum())
-            
-            mfi = 100 - (100 / (1 + (pos_sum / neg_sum)))
-            current_mfi = mfi.iloc[current_step] if not np.isnan(mfi.iloc[current_step]) else 50.0
-
-            # Bollinger Band Position
-            rolling_mean = data['Close'].rolling(window=20, min_periods=1).mean()
-            rolling_std = data['Close'].rolling(window=20, min_periods=1).std()
-            current_price = data['Close'].iloc[current_step]
-            
-            bb_position = 0.0
-            if not np.isnan(rolling_mean.iloc[current_step]) and not np.isnan(rolling_std.iloc[current_step]):
-                current_mean = rolling_mean.iloc[current_step]
-                current_std = rolling_std.iloc[current_step]
-                if current_std != 0:
-                    bb_position = (current_price - current_mean) / (2 * current_std)
-
-            return np.array([
-                float(relative_volume - 1),  # Normalized relative volume
-                float(returns_20d),          # 20-day returns
-                float(volatility_20d),       # 20-day volatility
-                float((current_mfi - 50) / 50),  # Normalized MFI
-                float(bb_position),          # Bollinger Band position (-1 to 1)
-            ])
-            
-        except Exception as e:
-            print(f"Error calculating ETF features: {e}")
-            return np.zeros(5)  # Return zeros for all features on error
-
-    def _calculate_correlation_features(self, stock):
-        current_step = self.agent_data[stock]['current_step']
-        lookback = 20  # Correlation lookback period
-        
-        if current_step < lookback:
-            return np.zeros(len(self.df) - 1)  # Return zeros for all correlations
-        
-        correlations = []
-        current_returns = self.df[stock]['Close'].pct_change().iloc[current_step-lookback:current_step]
-        
-        for other_stock in self.df.keys():
-            if other_stock != stock:
-                other_returns = self.df[other_stock]['Close'].pct_change().iloc[current_step-lookback:current_step]
-                corr = current_returns.corr(other_returns)
-                correlations.append(float(corr) if not np.isnan(corr) else 0.0)
-        
-        return np.array(correlations)
-
-    def _get_state(self, stock):
-        data = self.df[stock]
-        agent_data = self.agent_data[stock]
-        current_step = agent_data['current_step']
-        
-        # Get existing features
-        returns = 0.0
-        momentum_5 = 0.0
-        momentum_10 = 0.0
-        
-        if current_step >= 10:
-            current_price = data['Close'].iloc[current_step]
-            prev_price = data['Close'].iloc[current_step - 1]
-            price_5_ago = data['Close'].iloc[current_step - 5]
-            price_10_ago = data['Close'].iloc[current_step - 10]
-            
-            returns = (current_price - prev_price) / prev_price
-            momentum_5 = (current_price - price_5_ago) / price_5_ago
-            momentum_10 = (current_price - price_10_ago) / price_10_ago
-        
-        # Calculate technical indicators
-        rsi, macd, macd_hist = self._calculate_technical_indicators(data, current_step)
-        
-        # Calculate ETF-specific features
-        etf_features = self._calculate_etf_features(data, current_step)
-        
-        # Calculate correlation features
-        correlation_features = self._calculate_correlation_features(stock)
-        
-        # Calculate position metrics
-        position_size = 0.0
-        position_pnl = 0.0
-        if agent_data['shares_held'] != 0:
-            current_price = data['Close'].iloc[current_step]
-            position_value = agent_data['shares_held'] * current_price
-            total_value = position_value + agent_data['balance']
-            position_size = position_value / total_value
-            
-            if agent_data['entry_price'] is not None:
-                position_pnl = (current_price - agent_data['entry_price']) / agent_data['entry_price']
-        
-        # Normalize RSI to -1 to 1 range
-        normalized_rsi = (rsi - 50) / 50
-        
-        # Combine all features
-        market_features = np.concatenate([
-            [
-                float(returns),              # Recent price change
-                float(momentum_5),           # 5-day momentum
-                float(momentum_10),          # 10-day momentum
-                float(position_size),        # Current position size (-1 to 1)
-                float(position_pnl),         # Current position P&L
-                float(agent_data['balance'] / self.initial_balance),  # Normalized balance
-                float(normalized_rsi),       # RSI indicator
-                float(macd),                # MACD line
-                float(macd_hist),           # MACD histogram
-            ],
-            etf_features,                   # ETF-specific features
-            correlation_features            # Correlation with other ETFs
-        ])
-        
-        # Ensure no NaN values in the state
-        market_features = np.nan_to_num(market_features, nan=0.0)
-        
-        return market_features
-
+    
     def step(self, stock, action):
-        agent_data = self.agent_data[stock]
-        data = self.df[stock]
-
-        if agent_data['current_step'] >= len(data) - 1:
+        if self.current_steps[stock] >= len(self.data_dict[stock]) - 1:
             self.done = True
             return None, 0, self.done
-
-        previous_value = agent_data['balance'] + (agent_data['shares_held'] * data['Close'].iloc[agent_data['current_step']])
-        agent_data['current_step'] += 1
-        agent_data['current_price'] = data['Close'].iloc[agent_data['current_step']]
-
-        # Calculate position change based on current stock holdings
-        current_stock_value = agent_data['shares_held'] * agent_data['current_price']
-        target_percentage = self.position_sizes[action]
-        total_value = agent_data['balance'] + current_stock_value
         
-        # Calculate target stock value based on total portfolio value
-        target_stock_value = total_value * target_percentage if target_percentage > 0 else 0
+        current_price = self.data_dict[stock].iloc[self.current_steps[stock]]['Close']  # Use original Close price
+        current_price_scaled = self.data_dict[stock].iloc[self.current_steps[stock]]['Close_scaled']  # Use scaled price for state
         
-        # Calculate shares to trade
-        shares_to_trade = (target_stock_value - current_stock_value) / agent_data['current_price']
+        # Safety check for zero or negative prices
+        if current_price <= 0:
+            return self._get_state(stock), 0, self.done
         
-        # Track transaction costs
-        transaction_cost = 0
+        previous_portfolio = self.balances[stock] + self.positions[stock] * current_price
+        reward = 0
         
-        if shares_to_trade > 0:  # Buy
-            cost = shares_to_trade * agent_data['current_price'] * (1 + self.transaction_fee)
-            if cost <= agent_data['balance']:
-                agent_data['shares_held'] += shares_to_trade
-                agent_data['balance'] -= cost
-                agent_data['entry_price'] = agent_data['current_price']
-                transaction_cost = cost * self.transaction_fee
-        elif shares_to_trade < 0:  # Sell
-            shares_to_sell = min(abs(shares_to_trade), agent_data['shares_held'])
-            sale_value = shares_to_sell * agent_data['current_price'] * (1 - self.transaction_fee)
-            agent_data['balance'] += sale_value
-            agent_data['shares_held'] -= shares_to_sell
-            transaction_cost = sale_value * self.transaction_fee
-            if agent_data['shares_held'] == 0:
-                agent_data['entry_price'] = None
-
-        current_value = agent_data['balance'] + (agent_data['shares_held'] * agent_data['current_price'])
+        # Simplified Action Mapping
+        if action == 0:  # Buy 25%
+            percentage = 0.25
+            max_purchase = percentage * self.balances[stock]
+            shares_to_buy = max_purchase / current_price
+            cost = shares_to_buy * current_price * (1 + self.transaction_fee)
+            if cost <= self.balances[stock] and shares_to_buy > 0:
+                self.positions[stock] += shares_to_buy
+                self.balances[stock] -= cost
+                reward -= self.transaction_fee  # Transaction fee as penalty
         
-        # Update maximum portfolio value
-        agent_data['max_value'] = max(agent_data['max_value'], current_value)
+        elif action == 1:  # Buy 50%
+            percentage = 0.50
+            max_purchase = percentage * self.balances[stock]
+            shares_to_buy = max_purchase / current_price
+            cost = shares_to_buy * current_price * (1 + self.transaction_fee)
+            if cost <= self.balances[stock] and shares_to_buy > 0:
+                self.positions[stock] += shares_to_buy
+                self.balances[stock] -= cost
+                reward -= self.transaction_fee
         
-        # Calculate reward components
-        value_change = (current_value - previous_value) / previous_value
-        drawdown = (agent_data['max_value'] - current_value) / agent_data['max_value']
+        elif action == 2:  # Sell 25%
+            percentage = 0.25
+            shares_to_sell = percentage * self.positions[stock]
+            sale_value = shares_to_sell * current_price * (1 - self.transaction_fee)
+            if shares_to_sell > 0 and shares_to_sell <= self.positions[stock]:
+                self.positions[stock] -= shares_to_sell
+                self.balances[stock] += sale_value
+                reward -= self.transaction_fee
         
-        # Penalize excessive trading and drawdowns
-        reward = value_change - (transaction_cost / previous_value) - (drawdown * 0.1)
-        reward *= 100  # Scale reward for better learning
+        elif action == 3:  # Sell 50%
+            percentage = 0.50
+            shares_to_sell = percentage * self.positions[stock]
+            sale_value = shares_to_sell * current_price * (1 - self.transaction_fee)
+            if shares_to_sell > 0 and shares_to_sell <= self.positions[stock]:
+                self.positions[stock] -= shares_to_sell
+                self.balances[stock] += sale_value
+                reward -= self.transaction_fee
         
-        self.done = agent_data['current_step'] >= len(data) - 1
-
-        return self._get_state(stock), reward, self.done
-
-class QLearningAgent:
-    def __init__(self, state_space, action_space):
-        self.state_space = state_space
-        self.action_space = action_space
-        self.q_table = {}
-        self.learning_rate = 0.1  # Increased learning rate
-        self.gamma = 0.99  # Increased future reward importance
-        self.epsilon = 1.0
-        self.epsilon_decay = 0.9995  # Slower epsilon decay
-        self.epsilon_min = 0.05  # Increased minimum exploration
-
-    def get_action(self, state):
-        state_key = tuple(state.round(4))
+        elif action == 4:  # Hold
+            reward -= self.holding_penalty  # Optional holding penalty
         
-        if state_key not in self.q_table:
-            self.q_table[state_key] = np.zeros(self.action_space)
-            
-        if np.random.random() < self.epsilon:
-            return np.random.randint(self.action_space)
+        # Move to the next step
+        self.current_steps[stock] += 1
         
-        return np.argmax(self.q_table[state_key])
-
-    def update(self, state, action, reward, next_state):
-        state_key = tuple(state.round(4))
-        next_state_key = tuple(next_state.round(4))
+        if self.current_steps[stock] < len(self.data_dict[stock]):
+            next_price = self.data_dict[stock].iloc[self.current_steps[stock]]['Close']  # Use original Close price
+            # Update portfolio value
+            current_portfolio = self.balances[stock] + (self.positions[stock] * next_price)
+            # Reward is the percentage change in portfolio
+            reward += (current_portfolio - previous_portfolio) / self.initial_balance
+        else:
+            self.done = True
+            # Final portfolio change
+            current_portfolio = self.balances[stock] + (self.positions[stock] * current_price)
+            reward += (current_portfolio - self.initial_balance) / self.initial_balance
         
-        if next_state_key not in self.q_table:
-            self.q_table[next_state_key] = np.zeros(self.action_space)
-            
-        current_q = self.q_table[state_key][action]
-        next_max_q = np.max(self.q_table[next_state_key])
-        
-        new_q = current_q + self.learning_rate * (reward + self.gamma * next_max_q - current_q)
-        self.q_table[state_key][action] = new_q
-        
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-
-def train_agent(df, episodes=1000):
-    env = StockTradingEnv(df)
-    agent = QLearningAgent(env.state_space, env.action_space)
+        next_state = self._get_state(stock)
+        return next_state, reward, self.done
     
-    for episode in range(episodes):
-        state = env.reset()
-        total_reward = 0
+    def step_all(self, actions):
+        """Handle multiple actions for all stocks simultaneously"""
+        next_states = {}
+        rewards = {}
+        
+        for stock, action in actions.items():
+            next_state, reward, _ = self.step(stock, action)
+            next_states[stock] = next_state
+            rewards[stock] = reward
+        
+        return next_states, rewards, self.done
+    
+    def reset(self):
+        self.balances = {stock: self.initial_balance for stock in self.data_dict}
+        self.positions = {stock: 0 for stock in self.data_dict}
+        self.current_steps = {stock: 0 for stock in self.data_dict}
+        self.done = False
+        states = {stock: self._get_state(stock) for stock in self.data_dict}
+        return states
+    
+    def _get_state(self, stock):
+        row = self.data_dict[stock].iloc[self.current_steps[stock]]
+        return np.array([
+            row['Close_scaled'], 
+            row['Volume_scaled'], 
+            row['RSI_scaled'],
+            row['MACD_scaled'], 
+            row['Signal_Line_scaled'],
+        ], dtype=np.float32)
+
+def train_agents(env, episodes=200):
+    # Initialize a single agent for all stocks
+    state_size = env.state_space
+    action_size = env.action_size
+    agent = DQNAgent(state_size, action_size)
+    
+    # TensorBoard writer
+    writer = SummaryWriter('runs/dqn_training')
+    
+    training_history = {stock: {'net_worth': [], 'positions': []} for stock in env.data_dict}
+    
+    for episode in range(1, episodes + 1):
+        states = env.reset()
+        total_rewards = {stock: 0 for stock in env.data_dict}
         
         while not env.done:
-            action = agent.get_action(state)
-            next_state, reward, done = env.step(action)
-            agent.update(state, action, reward, next_state)
-            state = next_state
-            total_reward += reward
+            actions = {}
+            for stock in env.data_dict:
+                if states[stock] is not None:
+                    actions[stock] = agent.act(states[stock])
             
-        if episode % 100 == 0:
-            print(f"Episode {episode}, Total Reward: {total_reward}")
+            next_states, rewards, done = env.step_all(actions)
             
-    return agent
+            for stock in env.data_dict:
+                if states[stock] is not None and next_states[stock] is not None:
+                    agent.remember(states[stock], actions[stock], rewards[stock], next_states[stock], done)
+                    agent.replay()
+                    total_rewards[stock] += rewards[stock]
+                    
+                    # Record training history
+                    portfolio_value = env.balances[stock] + (env.positions[stock] * env.data_dict[stock].iloc[env.current_steps[stock]]['Close'])
+                    training_history[stock]['net_worth'].append(portfolio_value)
+                    training_history[stock]['positions'].append(actions[stock])
+            
+            states = next_states
+        
+        # Decay epsilon at the end of each episode
+        agent.decay_epsilon()
+        
+        # Log rewards to TensorBoard
+        for stock in env.data_dict:
+            writer.add_scalar(f'Reward/{stock}', total_rewards[stock], episode)
+            writer.add_scalar(f'Portfolio_Value/{stock}', training_history[stock]['net_worth'][-1], episode)
+            writer.add_scalar(f'Epsilon', agent.epsilon, episode)
+        
+        # Print progress every 10 episodes
+        if episode % 10 == 0:
+            print(f"\nEpisode {episode}/{episodes}")
+            for stock in env.data_dict:
+                portfolio_value = env.balances[stock] + (env.positions[stock] * env.data_dict[stock].iloc[env.current_steps[stock]]['Close'])
+                pct_change = ((portfolio_value - env.initial_balance) / env.initial_balance) * 100
+                print(f"{stock} - Portfolio: ${portfolio_value:.2f} ({pct_change:+.2f}%), Epsilon: {agent.epsilon:.3f}")
+    
+    agent.close_writer()
+    return agent, training_history
+
+def evaluate_agents(env, agent):
+    """
+    Evaluates the performance of the trained agent in the environment without exploration.
+    """
+    states = env.reset()
+    portfolio_values = {stock: [env.initial_balance] for stock in env.data_dict}
+    actions_taken = {stock: [] for stock in env.data_dict}
+    
+    # Disable exploration during evaluation
+    original_epsilon = agent.epsilon
+    agent.epsilon = 0.0
+    
+    while not env.done:
+        actions = {}
+        for stock in env.data_dict:
+            if states[stock] is not None:
+                actions[stock] = agent.act(states[stock], is_eval=True)
+                actions_taken[stock].append(actions[stock])
+        
+        next_states, rewards, done = env.step_all(actions)
+        
+        # Update portfolio values
+        for stock in env.data_dict:
+            if states[stock] is not None:
+                current_price = env.data_dict[stock].iloc[env.current_steps[stock]]['Close']
+                portfolio_value = env.balances[stock] + (env.positions[stock] * current_price)
+                portfolio_values[stock].append(portfolio_value)
+        
+        states = next_states
+    
+    # Restore original epsilon
+    agent.epsilon = original_epsilon
+    
+    # Print evaluation results
+    print("\nEvaluation Results:")
+    for stock in env.data_dict:
+        final_value = portfolio_values[stock][-1]
+        pct_change = ((final_value - env.initial_balance) / env.initial_balance) * 100
+        print(f"{stock} Final Portfolio Value: ${final_value:.2f} ({pct_change:+.2f}%)")
+    
+    return portfolio_values, actions_taken
+
+def plot_trade_histories(trade_histories, data):
+    """
+    Plots the trade histories for each stock, including portfolio value, stock price, and trading actions.
+    """
+    for stock, trades in trade_histories.items():
+        net_worths = trades["net_worth"]
+        positions = trades["positions"]
+        steps = list(range(len(net_worths)))
+        
+        # Ensure that stock_prices are aligned with the net_worths length
+        stock_prices_full = data[stock]['Close'].values
+        stock_prices = stock_prices_full[:len(net_worths)]
+        
+        # If stock_prices are shorter, pad with the last available price
+        if len(stock_prices) < len(net_worths):
+            pad_length = len(net_worths) - len(stock_prices)
+            stock_prices = np.concatenate([stock_prices, np.full(pad_length, stock_prices[-1])])
+        
+        plt.figure(figsize=(12, 8))
+
+        # Plot portfolio net worth
+        plt.subplot(2, 1, 1)
+        plt.plot(steps, net_worths, label='Net Worth', color="blue")
+        plt.title(f'{stock} Portfolio Value Over Time')
+        plt.xlabel('Trading Steps')
+        plt.ylabel('Net Worth ($)')
+        plt.legend()
+        plt.grid(True)
+
+        # Plot stock price and actions
+        plt.subplot(2, 1, 2)
+        plt.plot(stock_prices, label='Stock Price ($)', color="orange", alpha=0.7)
+
+        # Overlay buy and sell actions
+        buy_steps = [i for i, action in enumerate(positions) if action in [0, 1]]  # Buy 25%, Buy 50%
+        sell_steps = [i for i, action in enumerate(positions) if action in [2, 3]]  # Sell 25%, Sell 50%
+        
+        plt.scatter(buy_steps, stock_prices[buy_steps], color="green", marker="^", label="Buy")
+        plt.scatter(sell_steps, stock_prices[sell_steps], color="red", marker="v", label="Sell")
+
+        plt.title(f'{stock} Stock Price and Trading Actions')
+        plt.xlabel('Trading Steps')
+        plt.ylabel('Price ($)')
+        plt.legend()
+        plt.grid(True)
+
+        plt.tight_layout()
+        plt.show()
+        # Alternatively, save the plot
+        # plt.savefig(f'{stock}_trade_history.png')
+        # plt.close()
