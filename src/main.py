@@ -1,6 +1,6 @@
 # main.py
 from load_data import load_data
-from qlearn import StockTradingEnv, DQNAgent, train_agents, evaluate_agents, plot_trade_histories
+from deepq import StockTradingEnv, DQNAgent, train_agents, evaluate_agents, plot_trade_histories
 from analysis import FeatureAnalyzer
 import matplotlib.pyplot as plt
 import numpy as np

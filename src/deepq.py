@@ -1,4 +1,5 @@
-# qlearn.py
+"""Deep Q-Network implementation for stock trading."""
+
 import numpy as np
 import pandas as pd
 import torch
@@ -11,7 +12,16 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
 class DQNAgent(nn.Module):
+    """Deep Q-Network agent for stock trading."""
+    
     def __init__(self, state_size, action_size, hidden_size=256):
+        """Initialize DQN agent with neural network architecture.
+        
+        Args:
+            state_size (int): Dimension of state space
+            action_size (int): Number of possible actions
+            hidden_size (int): Number of hidden units in neural network
+        """
         super(DQNAgent, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
@@ -66,18 +76,37 @@ class DQNAgent(nn.Module):
         self.writer = SummaryWriter('runs/dqn_training')
     
     def decay_epsilon(self):
+        """Decay epsilon value."""
         if self.epsilon > self.epsilon_min:
             self.epsilon -= self.epsilon_decay_step
             if self.epsilon < self.epsilon_min:
                 self.epsilon = self.epsilon_min
     
     def forward(self, state):
+        """Forward pass of online network.
+        
+        Args:
+            state: Current state
+        
+        Returns:
+            torch.Tensor: Q-values for each action
+        """
         return self.online_network(state)
     
     def update_target_network(self):
+        """Update target network weights with current network weights."""
         self.target_network.load_state_dict(self.online_network.state_dict())
     
     def act(self, state, is_eval=False):
+        """Choose action using epsilon-greedy policy.
+        
+        Args:
+            state: Current state
+            is_eval (bool): Whether in evaluation mode
+        
+        Returns:
+            int: Selected action
+        """
         if not is_eval and random.random() <= self.epsilon:
             return random.randrange(self.action_size)
         
@@ -89,9 +118,19 @@ class DQNAgent(nn.Module):
         return torch.argmax(action_values).item()
     
     def remember(self, state, action, reward, next_state, done):
+        """Store experience tuple in replay memory.
+        
+        Args:
+            state: Current state
+            action: Action taken
+            reward: Reward received
+            next_state: Next state
+            done: Whether episode is done
+        """
         self.memory.append((state, action, reward, next_state, done))
     
     def replay(self):
+        """Train on batch of experiences from replay memory."""
         if len(self.memory) < self.batch_size:
             return
         
@@ -137,12 +176,16 @@ class DQNAgent(nn.Module):
             self.update_target_network()
         
         self.train_steps += 1
-    
-    def close_writer(self):
-        self.writer.close()
 
 class StockTradingEnv:
+    """Stock trading environment implementing gym-like interface."""
+    
     def __init__(self, df):
+        """Initialize trading environment.
+        
+        Args:
+            df (dict): Dictionary of stock dataframes
+        """
         self.data_dict = df  # Dictionary of DataFrames for each stock
         self.action_space = 5  # Simplified actions: Buy 25%, Buy 50%, Sell 25%, Sell 50%, Hold
         self.action_size = self.action_space
@@ -154,6 +197,15 @@ class StockTradingEnv:
         self.reset()
     
     def step(self, stock, action):
+        """Take a step in the environment.
+        
+        Args:
+            stock (str): Stock symbol
+            action (int): Action to take
+        
+        Returns:
+            tuple: Next state, reward, done
+        """
         if self.current_steps[stock] >= len(self.data_dict[stock]) - 1:
             self.done = True
             return None, 0, self.done
@@ -229,18 +281,33 @@ class StockTradingEnv:
         return next_state, reward, self.done
     
     def step_all(self, actions):
-        """Handle multiple actions for all stocks simultaneously"""
+        """Take a step in the environment for all stocks.
+        
+        Args:
+            actions (dict): Dictionary of actions for each stock
+        
+        Returns:
+            tuple: Next states, rewards, done
+        """
         next_states = {}
         rewards = {}
+        done = True  # Will be set to False if any stock is still active
         
         for stock, action in actions.items():
-            next_state, reward, _ = self.step(stock, action)
-            next_states[stock] = next_state
-            rewards[stock] = reward
+            if self.current_steps[stock] < len(self.data_dict[stock]) - 1:
+                done = False  # At least one stock is still active
+                next_state, reward, _ = self.step(stock, action)
+                next_states[stock] = next_state
+                rewards[stock] = reward
+            else:
+                next_states[stock] = None
+                rewards[stock] = 0
         
+        self.done = done  # Update environment done state
         return next_states, rewards, self.done
     
     def reset(self):
+        """Reset environment to initial state."""
         self.balances = {stock: self.initial_balance for stock in self.data_dict}
         self.positions = {stock: 0 for stock in self.data_dict}
         self.current_steps = {stock: 0 for stock in self.data_dict}
@@ -249,6 +316,14 @@ class StockTradingEnv:
         return states
     
     def _get_state(self, stock):
+        """Get current state for a stock.
+        
+        Args:
+            stock (str): Stock symbol
+        
+        Returns:
+            ndarray: State vector
+        """
         row = self.data_dict[stock].iloc[self.current_steps[stock]]
         return np.array([
             row['Close_scaled'], 
@@ -259,7 +334,15 @@ class StockTradingEnv:
         ], dtype=np.float32)
 
 def train_agents(env, episodes=200):
-    # Initialize a single agent for all stocks
+    """Train DQN agent on environment.
+    
+    Args:
+        env: Trading environment
+        episodes (int): Number of training episodes
+    
+    Returns:
+        tuple: Trained agent and training history
+    """
     state_size = env.state_space
     action_size = env.action_size
     agent = DQNAgent(state_size, action_size)
@@ -311,38 +394,51 @@ def train_agents(env, episodes=200):
                 pct_change = ((portfolio_value - env.initial_balance) / env.initial_balance) * 100
                 print(f"{stock} - Portfolio: ${portfolio_value:.2f} ({pct_change:+.2f}%), Epsilon: {agent.epsilon:.3f}")
     
-    agent.close_writer()
+    agent.writer.close()
     return agent, training_history
 
 def evaluate_agents(env, agent):
-    """
-    Evaluates the performance of the trained agent in the environment without exploration.
+    """Evaluate the performance of the trained agent in the environment without exploration.
+    
+    Args:
+        env: Trading environment
+        agent: Trained DQN agent
+    
+    Returns:
+        tuple: Portfolio values and actions taken
     """
     states = env.reset()
     portfolio_values = {stock: [env.initial_balance] for stock in env.data_dict}
     actions_taken = {stock: [] for stock in env.data_dict}
+    active_stocks = set(env.data_dict.keys())
     
     # Disable exploration during evaluation
     original_epsilon = agent.epsilon
     agent.epsilon = 0.0
     
-    while not env.done:
+    while active_stocks:  # Continue until all stocks are done
         actions = {}
-        for stock in env.data_dict:
+        for stock in active_stocks.copy():
             if states[stock] is not None:
                 actions[stock] = agent.act(states[stock], is_eval=True)
                 actions_taken[stock].append(actions[stock])
+                
+                # Check if this stock is done
+                if env.current_steps[stock] >= len(env.data_dict[stock]) - 1:
+                    active_stocks.remove(stock)
+                    continue
         
-        next_states, rewards, done = env.step_all(actions)
-        
-        # Update portfolio values
-        for stock in env.data_dict:
-            if states[stock] is not None:
-                current_price = env.data_dict[stock].iloc[env.current_steps[stock]]['Close']
-                portfolio_value = env.balances[stock] + (env.positions[stock] * current_price)
-                portfolio_values[stock].append(portfolio_value)
-        
-        states = next_states
+        if actions:  # Only step if there are active stocks
+            next_states, rewards, _ = env.step_all(actions)
+            
+            # Update portfolio values for active stocks
+            for stock in actions.keys():
+                if stock in active_stocks:
+                    current_price = env.data_dict[stock].iloc[env.current_steps[stock]]['Close']
+                    portfolio_value = env.balances[stock] + (env.positions[stock] * current_price)
+                    portfolio_values[stock].append(portfolio_value)
+            
+            states = next_states
     
     # Restore original epsilon
     agent.epsilon = original_epsilon
@@ -357,8 +453,11 @@ def evaluate_agents(env, agent):
     return portfolio_values, actions_taken
 
 def plot_trade_histories(trade_histories, data):
-    """
-    Plots the trade histories for each stock, including portfolio value, stock price, and trading actions.
+    """Plot the trade histories for each stock, including portfolio value, stock price, and trading actions.
+    
+    Args:
+        trade_histories (dict): Dictionary of trade histories for each stock
+        data (dict): Dictionary of stock dataframes
     """
     for stock, trades in trade_histories.items():
         net_worths = trades["net_worth"]

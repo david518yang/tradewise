@@ -1,21 +1,33 @@
-# analysis.py
+"""Feature analysis for stock trading environment."""
+
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor
-from scipy.stats import entropy
-from collections import defaultdict
+import matplotlib.pyplot as plt
 
 class FeatureAnalyzer:
+    """Analyze feature importance in stock trading environment."""
+    
     def __init__(self, env):
+        """Initialize feature analyzer.
+        
+        Args:
+            env: Trading environment
+        """
         self.env = env
         self.feature_names = [
             'Close_scaled', 'Volume_scaled', 'RSI_scaled', 'MACD_scaled', 'Signal_Line_scaled'
         ]
     
     def collect_states_and_rewards(self, episodes=100):
+        """Collect states and rewards from environment.
+        
+        Args:
+            episodes (int): Number of episodes to collect data
+        
+        Returns:
+            tuple: States dictionary, rewards dictionary
+        """
         states_dict = defaultdict(list)
         rewards_dict = defaultdict(list)
         
@@ -49,6 +61,15 @@ class FeatureAnalyzer:
         return states_dict, rewards_dict
     
     def calculate_feature_importance_rf(self, states_dict, rewards_dict):
+        """Calculate feature importance using random forest.
+        
+        Args:
+            states_dict (dict): States dictionary
+            rewards_dict (dict): Rewards dictionary
+        
+        Returns:
+            dict: Feature importance dictionary
+        """
         importance_dict = {}
         
         for stock in states_dict.keys():
@@ -65,6 +86,14 @@ class FeatureAnalyzer:
         return importance_dict
     
     def calculate_feature_importance_entropy(self, states_dict):
+        """Calculate feature importance using entropy.
+        
+        Args:
+            states_dict (dict): States dictionary
+        
+        Returns:
+            dict: Feature importance dictionary
+        """
         importance_dict = {}
         
         for stock in states_dict.keys():
@@ -86,6 +115,12 @@ class FeatureAnalyzer:
         return importance_dict
     
     def visualize_feature_importance(self, importance_dict, method='Random Forest'):
+        """Visualize feature importance.
+        
+        Args:
+            importance_dict (dict): Feature importance dictionary
+            method (str): Method used for importance calculation
+        """
         num_stocks = len(importance_dict)
         plt.figure(figsize=(15, 5 * num_stocks))
         
@@ -109,6 +144,12 @@ class FeatureAnalyzer:
         plt.show()
     
     def visualize_state_features(self, stock, window=100):
+        """Visualize state features.
+        
+        Args:
+            stock (str): Stock symbol
+            window (int): Window size for rolling mean
+        """
         states_dict, _ = self.collect_states_and_rewards(episodes=1)
         states = np.array(states_dict[stock])
         
@@ -137,6 +178,11 @@ class FeatureAnalyzer:
         plt.show()
     
     def visualize_feature_correlations(self, stock):
+        """Visualize feature correlations.
+        
+        Args:
+            stock (str): Stock symbol
+        """
         states_dict, _ = self.collect_states_and_rewards(episodes=1)
         states = np.array(states_dict[stock])
         
@@ -154,6 +200,15 @@ class FeatureAnalyzer:
         plt.show()
     
     def analyze_features(self, episodes=100, show_plots=True):
+        """Analyze feature importance using random forest and entropy.
+        
+        Args:
+            episodes (int): Number of episodes to collect data
+            show_plots (bool): Whether to show plots
+        
+        Returns:
+            tuple: Random forest importance, entropy importance, states dictionary
+        """
         print("Collecting state and reward data...")
         states_dict, rewards_dict = self.collect_states_and_rewards(episodes)
         
