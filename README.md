@@ -13,9 +13,19 @@ To run this project, you must begin by installing the necessary libraries:
 pip3 install -r requirements.txt
 ```
 
-Afterwards, navigate into the `src` directory and run the following command:
+Afterwards, navigate into the `src` directory:
 ```
-python3 main.py
+cd src
+```
+
+Depending on which model you want to run, either enter:
+```
+python3 deepq.py
+```
+
+Or 
+```
+python3 qlearn.py
 ```
 
 Let the agent train and enjoy the results!
