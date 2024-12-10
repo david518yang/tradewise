@@ -98,14 +98,10 @@ def backtest_agent(test_df, predictions, initial_balance=3333.33):
     
     Returns:
         list: Portfolio values over time
-        list: List of indices where "buy" actions occurred
-        list: List of indices where "sell" actions occurred
     """
     balance = initial_balance
     shares = 0
     portfolio_values = []
-    buy_signals = []
-    sell_signals = []
 
     for i in range(len(test_df)):
         current_price = test_df['Close'].iloc[i]
@@ -115,39 +111,31 @@ def backtest_agent(test_df, predictions, initial_balance=3333.33):
             shares_to_buy = balance / current_price
             balance = 0
             shares += shares_to_buy
-            buy_signals.append(i)
         
         # If the model predicts negative returns, sell
         elif predictions[i] < 0 and shares > 0:
             balance += shares * current_price
             shares = 0
-            sell_signals.append(i)
 
         portfolio_value = balance + (shares * current_price)
         portfolio_values.append(portfolio_value)
     
-    return portfolio_values, buy_signals, sell_signals
+    return portfolio_values
 
-def plot_portfolio(portfolio_values, stock_name):
-    """Plot the portfolio values over time."""
+def plot_portfolio(portfolio_values, test_df, stock_name):
+    """Plot the portfolio values over time using the date as the x-axis.
+    
+    Args:
+        portfolio_values (list): List of portfolio values over time
+        test_df (pd.DataFrame): Test DataFrame containing the dates
+        stock_name (str): Name of the stock being plotted
+    """
     plt.figure(figsize=(10, 6))
-    plt.plot(portfolio_values, label='Portfolio Value', color='blue')
-    plt.xlabel('Time (Days)')
+    plt.plot(test_df.index, portfolio_values, label='Portfolio Value', color='blue')
+    plt.xlabel('Date')
     plt.ylabel('Portfolio Value ($)')
     plt.title(f'Portfolio Value Over Time for {stock_name}')
-    plt.grid(True, linestyle='--', linewidth=0.5)
-    plt.legend()
-    plt.show()
-
-def plot_stock_with_trades(test_df, buy_signals, sell_signals, stock_name):
-    """Plot the stock price and mark trading actions (buy/sell)"""
-    plt.figure(figsize=(10, 6))
-    plt.plot(test_df['Close'].values, label='Stock Price', color='black')
-    plt.scatter(buy_signals, test_df['Close'].iloc[buy_signals], color='green', marker='^', label='Buy', s=100)
-    plt.scatter(sell_signals, test_df['Close'].iloc[sell_signals], color='red', marker='v', label='Sell', s=100)
-    plt.xlabel('Time (Days)')
-    plt.ylabel('Stock Price ($)')
-    plt.title(f'Stock Price and Trading Actions for {stock_name}')
+    plt.xticks(rotation=45)
     plt.grid(True, linestyle='--', linewidth=0.5)
     plt.legend()
     plt.show()
@@ -178,19 +166,21 @@ def main():
         print(f"Training Linear Regression Agent for {stock_name}...")
         agent.train(X_train, y_train)
         
+        # Evaluate the agent
+        print(f"Evaluating model for {stock_name}...")
+        score = agent.evaluate(X_test, y_test)
+        
         # Get predictions and backtest
         predictions = agent.predict(X_test)
-        portfolio_values, buy_signals, sell_signals = backtest_agent(test_df, predictions, initial_balance=3333.33)
+        portfolio_values = backtest_agent(test_df, predictions, initial_balance=3333.33)
         
         # Plot portfolio values
-        plot_portfolio(portfolio_values, stock_name)
-        
-        # Plot stock price with buy/sell markers
-        plot_stock_with_trades(test_df, buy_signals, sell_signals, stock_name)
+        plot_portfolio(portfolio_values, test_df, stock_name)
         
         # Calculate financial metrics
         metrics = calculate_metrics(portfolio_values, initial_balance=3333.33)
         
+        # Print metrics
         print(f"\n{stock_name} Final Metrics:")
         print(f"  Total Return: {metrics['total_return']:.2f}%")
         print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
