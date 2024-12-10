@@ -1,0 +1,79 @@
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+
+class StockTradingEnv:
+    def __init__(self, df):
+        self.df = df
+        self.action_space = 3
+        
+        # State space: position + 5 market features
+        self.state_space = 6
+        
+        self.initial_balance = 10000
+        self.transaction_fee = 0.001
+
+        self.agent_data = {key: {'balance': self.initial_balance / len(df), 'shares_held': 0, 'current_step': 0} for key in df.keys()}
+        self.done = False
+        self.reset()
+
+    def reset(self):
+        for key, agent_data in self.agent_data.items():
+            agent_data['balance'] = self.initial_balance / len(self.df)
+            agent_data['shares_held'] = 0
+            agent_data['current_step'] = 0
+        self.done = False
+        return {key: self._get_state(key) for key in self.df.keys()}
+
+    def _get_state(self, stock):
+        data = self.df[stock]
+        agent_data = self.agent_data[stock]
+        market_features = np.array([
+            data['Open'].iloc[agent_data['current_step']],
+            data['High'].iloc[agent_data['current_step']],
+            data['Low'].iloc[agent_data['current_step']],
+            data['Close'].iloc[agent_data['current_step']],
+            data['Volume'].iloc[agent_data['current_step']]
+        ])
+        position = np.array([agent_data['shares_held']])
+        return np.concatenate([position, market_features])
+
+    def step(self, stock, action):
+        agent_data = self.agent_data[stock]
+        data = self.df[stock]
+
+        if agent_data['current_step'] >= len(data) - 1:
+            self.done = True
+            return None, 0, self.done
+
+        previous_value = agent_data['balance'] + (agent_data['shares_held'] * data['Close'].iloc[agent_data['current_step']])
+        agent_data['current_step'] += 1
+        agent_data['current_price'] = data['Close'].iloc[agent_data['current_step']]
+
+        if action == 1:  # Buy
+            shares_to_buy = agent_data['balance'] // agent_data['current_price']
+            cost = shares_to_buy * agent_data['current_price'] * (1 + self.transaction_fee)
+            if cost <= agent_data['balance']:
+                agent_data['shares_held'] += shares_to_buy
+                agent_data['balance'] -= cost
+        elif action == 2:  # Sell
+            if agent_data['shares_held'] > 0:
+                sale_value = agent_data['shares_held'] * agent_data['current_price'] * (1 - self.transaction_fee)
+                agent_data['balance'] += sale_value
+                agent_data['shares_held'] = 0
+
+        current_value = agent_data['balance'] + (agent_data['shares_held'] * agent_data['current_price'])
+        reward = ((current_value - previous_value) / previous_value) * 100
+        self.done = agent_data['current_step'] >= len(data) - 1
+
+        return self._get_state(stock), reward, self.done
+
+class LinearRegressionAgent:
+    def __init__(self):
+        self.model = LinearRegression()
+    
+    def train(self, X, y):
+        self.model.fit(X, y)
+    
+    def predict(self, X):
+        return self.model.predict(X)
