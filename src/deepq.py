@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 import itertools
 import os
+from training_data import load_training_data, load_test_data, save_agent, load_agent
 
 class DQNAgent(nn.Module):
     """Deep Q-Network agent for stock trading."""
@@ -570,17 +571,17 @@ class StockTradingEnv:
         ], dtype=np.float32)
 
 def train_agents(env, episodes=200):
-    """Train DQN agents on environment.
+    """Train DQN agents on the environment.
     
     Args:
-        env: Trading environment
-        episodes (int): Number of training episodes
+        env (StockTradingEnv): The trading environment.
+        episodes (int): Number of training episodes.
     
     Returns:
         tuple: (agents, training_history, all_pretrained)
-            agents (dict): Dictionary of trained DQN agents
-            training_history (dict): Training history for each stock
-            all_pretrained (bool): True if all agents were pre-trained and no training was done, otherwise False
+            agents (dict): Dictionary of trained DQN agents.
+            training_history (dict): Training history for each stock.
+            all_pretrained (bool): True if all agents were pre-trained and no training was done, otherwise False.
     """
     print("\nInitializing DQN Agents...")
     agents = {}
@@ -611,13 +612,10 @@ def train_agents(env, episodes=200):
         print(f"End: {training_history[stock]['train_end'].strftime('%Y-%m-%d')}")
         print(f"Duration: {training_history[stock]['train_duration']} days")
         
-        # Check if the model weights exist
-        model_path = f'./models/{stock}_dqn_agent.pth'
-        if os.path.exists(model_path):
-            print(f"Loading existing weights for {stock} from {model_path}")
-            agents[stock].load_state_dict(torch.load(model_path, weights_only=True))
+        # Check if pre-trained weights exist and load them
+        if load_agent(agents[stock], stock):
             print(f"Skipping training for {stock} since weights already exist.")
-            skip_training_stocks.append(stock)  # Add stock to skip list
+            skip_training_stocks.append(stock)
 
     # If all stocks have pre-trained weights, skip training
     if len(skip_training_stocks) == len(env.data_dict.keys()):
@@ -728,11 +726,9 @@ def train_agents(env, episodes=200):
             print(f"Final Portfolio Value: ${final_value:.2f} ({pct_change:+.2f}%)")
             print(f"Best Portfolio Value: ${training_history[stock]['best_value']:.2f}")
             print(f"Total Training Steps: {len(training_history[stock]['net_worth'])}")
-
-        final_model_path = f'./models/{stock}_dqn_agent.pth'
-        os.makedirs('./models', exist_ok=True)
-        torch.save(agents[stock].state_dict(), final_model_path)
-        print(f"Saved final model for {stock} at {final_model_path}")
+        
+        # Save agent model
+        save_agent(agents[stock], stock)
     
     return agents, training_history, False
 
@@ -861,28 +857,9 @@ def plot_trade_histories(trade_histories, data):
 
 # Main execution
 if __name__ == "__main__":
-    from load_data import load_data
-    from split import split_data_individual
-    
-    # Load data
-    qqq, spy, voo = load_data()
-    
-    # Split data using individual full durations
-    split_data = split_data_individual(qqq, spy, voo, test_size=0.2)
-    
-    # Create training data dictionary
-    train_data = {
-        'QQQ': split_data['QQQ']['train'],
-        'SPY': split_data['SPY']['train'],
-        'VOO': split_data['VOO']['train']
-    }
-    
-    # Create test data dictionary with individual periods
-    test_data = {
-        'QQQ': split_data['QQQ']['test'],
-        'SPY': split_data['SPY']['test'],
-        'VOO': split_data['VOO']['test']
-    }
+    # Load training and test data
+    train_data = load_training_data()
+    test_data = load_test_data()
     
     # Print training and test periods for each stock
     for stock in ['QQQ', 'SPY', 'VOO']:
@@ -898,16 +875,20 @@ if __name__ == "__main__":
     print("\nTraining agents...")
     agents, training_history, all_pretrained = train_agents(env, episodes=200)
     
-    # Evaluate agents
+    # Evaluate agents (always run evaluation regardless of whether agents were pre-trained)
     print("\nEvaluating agents...")
     portfolio_values, actions_taken = evaluate_agents(test_env, agents)
     
-    # Plot results
-    import matplotlib.pyplot as plt
+    # Plot evaluation history
+    evaluation_history = {stock: {'net_worth': portfolio_values[stock], 'positions': actions_taken[stock]} for stock in portfolio_values}
+    plot_trade_histories(evaluation_history, test_data)
     
-    # Plot evaluation results
+    # **Plot Portfolio Values During Test Period**
+    print("\nPlotting Portfolio Values During Test Period...")
+    import matplotlib.pyplot as plt
+
     plt.figure(figsize=(15, 8))
-    for stock in env.data_dict.keys():
+    for stock in test_env.data_dict.keys():
         dates = test_data[stock].index
         values = portfolio_values[stock]
 
@@ -923,23 +904,9 @@ if __name__ == "__main__":
     plt.ylabel('Portfolio Value ($)')
     plt.legend()
     plt.grid(True)
+
+    # **Ensure this plot is shown**
     plt.show()
-    
-    if not all_pretrained:
-        # Plot training history only if training actually happened
-        print("\nPlotting Training History...")
-        plot_trade_histories(training_history, train_data)
-    
-    # Prepare and plot evaluation history with test_data
-    evaluation_history = {}
-    for stock in portfolio_values:
-        evaluation_history[stock] = {
-            'net_worth': portfolio_values[stock],
-            'positions': actions_taken[stock]
-        }
-    
-    print("\nPlotting Evaluation History...")
-    plot_trade_histories(evaluation_history, test_data)
     
     # Print final performance metrics for evaluation
     print("\nFinal Performance Metrics (Evaluation):")
@@ -955,3 +922,8 @@ if __name__ == "__main__":
         else:
             # Handle case where no evaluation steps were taken for this stock
             print(f"{stock}: No evaluation data available.")
+    
+    # **Plot training history only if training occurred**
+    if not all_pretrained:
+        print("\nPlotting Training History...")
+        plot_trade_histories(training_history, train_data)
