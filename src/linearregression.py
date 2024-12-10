@@ -122,23 +122,60 @@ def backtest_agent(test_df, predictions, initial_balance=3333.33):
     
     return portfolio_values
 
-def plot_portfolio(portfolio_values, test_df, stock_name):
-    """Plot the portfolio values over time using the date as the x-axis.
+def plot_portfolio(portfolio_values, test_df, predictions, stock_name):
+    """Plot the portfolio values and trading signals over time.
     
     Args:
         portfolio_values (list): List of portfolio values over time
         test_df (pd.DataFrame): Test DataFrame containing the dates
+        predictions (np.ndarray): Model predictions
         stock_name (str): Name of the stock being plotted
+        
+    Returns:
+        matplotlib.figure.Figure: The generated figure
     """
-    plt.figure(figsize=(10, 6))
-    plt.plot(test_df.index, portfolio_values, label='Portfolio Value', color='blue')
-    plt.xlabel('Date')
-    plt.ylabel('Portfolio Value ($)')
-    plt.title(f'Portfolio Value Over Time for {stock_name}')
-    plt.xticks(rotation=45)
-    plt.grid(True, linestyle='--', linewidth=0.5)
-    plt.legend()
-    plt.show()
+    dates = test_df.index
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10))
+    fig.suptitle(f'Linear Regression Trading Results - {stock_name}')
+    
+    # Plot portfolio value
+    ax1.plot(dates, portfolio_values, label='Portfolio Value', color='blue')
+    ax1.set_title('Portfolio Value Over Time')
+    ax1.set_ylabel('Portfolio Value ($)')
+    ax1.legend()
+    ax1.grid(True)
+    
+    # Plot stock price and trading signals
+    stock_prices = test_df['Close'].values
+    ax2.plot(dates, stock_prices, label='Stock Price', color='black', alpha=0.7)
+    
+    # Add buy/sell signals
+    buy_signals = predictions > 0
+    sell_signals = predictions < 0
+    
+    buy_dates = dates[buy_signals]
+    sell_dates = dates[sell_signals]
+    buy_prices = test_df.loc[buy_dates, 'Close']
+    sell_prices = test_df.loc[sell_dates, 'Close']
+    
+    if len(buy_dates) > 0:
+        ax2.scatter(buy_dates, buy_prices, color='green', marker='^', 
+                   label='Buy', s=100, alpha=0.7)
+    if len(sell_dates) > 0:
+        ax2.scatter(sell_dates, sell_prices, color='red', marker='v', 
+                   label='Sell', s=100, alpha=0.7)
+    
+    ax2.set_title('Stock Price with Trading Signals')
+    ax2.set_ylabel('Stock Price ($)')
+    ax2.legend()
+    ax2.grid(True)
+    
+    # Format x-axis dates
+    plt.gcf().autofmt_xdate()
+    
+    plt.tight_layout()
+    return fig
 
 def main():
     """Main function to run Linear Regression agent."""
@@ -174,8 +211,9 @@ def main():
         predictions = agent.predict(X_test)
         portfolio_values = backtest_agent(test_df, predictions, initial_balance=3333.33)
         
-        # Plot portfolio values
-        plot_portfolio(portfolio_values, test_df, stock_name)
+        # Plot portfolio values and show the plot
+        fig = plot_portfolio(portfolio_values, test_df, predictions, stock_name)
+        plt.show()
         
         # Calculate financial metrics
         metrics = calculate_metrics(portfolio_values, initial_balance=3333.33)
