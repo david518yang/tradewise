@@ -14,7 +14,7 @@ pip3 install -r requirements.txt
 ```
 
 For ease of use and speed, we have included pretrained data files for each stock to test with.
-If you would like to train the model yourself, delete the three files in models.
+If you would like to train the model yourself, delete the three files preexisting in the models folder.
 Warning: Running the deepq.py program typically takes 2 hours for completion if you do not
 use the pretrained data.
 
