@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 import itertools
+import os
 
 class DQNAgent(nn.Module):
     """Deep Q-Network agent for stock trading."""
@@ -279,26 +280,31 @@ class DQNAgent(nn.Module):
         Returns:
             int: Selected action
         """
-        # Validate state
         if not isinstance(state, np.ndarray):
             state = np.array(state, dtype=np.float32)
-        if not np.all(np.isfinite(state)):
-            state = np.nan_to_num(state, 0)
+        elif np.isscalar(state):
+            state = np.array([state], dtype=np.float32)
+
+        # Ensure state has correct shape (1, 9)
+        if state.ndim == 1 and state.shape[0] == self.state_size:  # Correct 1D state
+            state = np.expand_dims(state, axis=0)  # (9,) -> (1, 9)
+        elif state.ndim == 0:  # Handle scalar state
+            state = np.array([state], dtype=np.float32).reshape(1, -1)  # (1,) -> (1, 1)
+        elif state.ndim == 1 and state.shape[0] == 1:  # 1D array of length 1
+            state = state.reshape(1, -1)  # (1,) -> (1, 1)
+
+        state = torch.FloatTensor(state).to(self.device)
         
-        # Convert state to tensor and add batch dimension
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        
-        # Set networks to eval mode for inference
+        assert state.shape == (1, self.state_size), f"Expected state shape (1, {self.state_size}), but got {state.shape}"
+
         self.online_network.eval()
         with torch.no_grad():
             q_values = self.online_network(state)
             action = q_values.argmax().item()
         self.online_network.train()
-        
-        # Validate action
-        action = max(0, min(action, self.action_size - 1))
-        return action
 
+        return action
+        
 class StockTradingEnv:
     """Stock trading environment implementing gym-like interface."""
     
@@ -571,11 +577,15 @@ def train_agents(env, episodes=200):
         episodes (int): Number of training episodes
     
     Returns:
-        tuple: Dictionary of trained agents and training history
+        tuple: (agents, training_history, all_pretrained)
+            agents (dict): Dictionary of trained DQN agents
+            training_history (dict): Training history for each stock
+            all_pretrained (bool): True if all agents were pre-trained and no training was done, otherwise False
     """
     print("\nInitializing DQN Agents...")
     agents = {}
     training_history = {}
+    skip_training_stocks = []  # List of stocks that will skip training
     
     # Initialize agents and history for each stock
     for stock in env.data_dict.keys():
@@ -600,12 +610,25 @@ def train_agents(env, episodes=200):
         print(f"Start: {training_history[stock]['train_start'].strftime('%Y-%m-%d')}")
         print(f"End: {training_history[stock]['train_end'].strftime('%Y-%m-%d')}")
         print(f"Duration: {training_history[stock]['train_duration']} days")
+        
+        # Check if the model weights exist
+        model_path = f'./models/{stock}_dqn_agent.pth'
+        if os.path.exists(model_path):
+            print(f"Loading existing weights for {stock} from {model_path}")
+            agents[stock].load_state_dict(torch.load(model_path, weights_only=True))
+            print(f"Skipping training for {stock} since weights already exist.")
+            skip_training_stocks.append(stock)  # Add stock to skip list
+
+    # If all stocks have pre-trained weights, skip training
+    if len(skip_training_stocks) == len(env.data_dict.keys()):
+        print("\nAll agents have pre-trained weights. Skipping training.")
+        return agents, training_history, True  # Return True to indicate no new training occurred
     
     print("\nStarting Training...")
     for episode in range(episodes):
         states = env.reset()
-        total_rewards = {stock: 0 for stock in env.data_dict.keys()}
-        active_stocks = set(env.data_dict.keys())
+        total_rewards = {stock: 0 for stock in env.data_dict.keys() if stock not in skip_training_stocks}
+        active_stocks = set(env.data_dict.keys()) - set(skip_training_stocks)
         
         while not env.done and active_stocks:
             actions = {}
@@ -649,6 +672,9 @@ def train_agents(env, episodes=200):
         # Early stopping check and epsilon decay for each agent
         all_converged = True
         for stock in env.data_dict.keys():
+            if stock in skip_training_stocks:
+                continue
+            
             if len(training_history[stock]['net_worth']) > 0:  # Only update if we have data for this stock
                 current_value = training_history[stock]['net_worth'][-1]
                 
@@ -670,6 +696,9 @@ def train_agents(env, episodes=200):
         if episode % 10 == 0:
             print(f"\nEpisode {episode}/{episodes}")
             for stock in env.data_dict.keys():
+                if stock in skip_training_stocks:
+                    continue
+                
                 if len(training_history[stock]['net_worth']) > 0:  # Only print if we have data
                     portfolio_value = training_history[stock]['net_worth'][-1]
                     pct_change = ((portfolio_value - env.initial_balance) / env.initial_balance) * 100
@@ -685,6 +714,10 @@ def train_agents(env, episodes=200):
     # Print final training summary
     print("\nTraining Summary:")
     for stock in env.data_dict.keys():
+        if stock in skip_training_stocks:
+            print(f"\n{stock} weights were preloaded. No training was done.")
+            continue
+
         print(f"\n{stock}:")
         print(f"Training Period: {training_history[stock]['train_start'].strftime('%Y-%m-%d')} to "
               f"{training_history[stock]['train_end'].strftime('%Y-%m-%d')} "
@@ -695,8 +728,13 @@ def train_agents(env, episodes=200):
             print(f"Final Portfolio Value: ${final_value:.2f} ({pct_change:+.2f}%)")
             print(f"Best Portfolio Value: ${training_history[stock]['best_value']:.2f}")
             print(f"Total Training Steps: {len(training_history[stock]['net_worth'])}")
+
+        final_model_path = f'./models/{stock}_dqn_agent.pth'
+        os.makedirs('./models', exist_ok=True)
+        torch.save(agents[stock].state_dict(), final_model_path)
+        print(f"Saved final model for {stock} at {final_model_path}")
     
-    return agents, training_history
+    return agents, training_history, False
 
 def evaluate_agents(env, agents):
     """Evaluate the performance of the trained agents in the environment without exploration.
@@ -720,25 +758,39 @@ def evaluate_agents(env, agents):
     states = env.reset()
     done = False
     
+    # Determine which stocks we can actually evaluate
+    # Only those that appear in both agents and environment states
+    available_stocks = list(states.keys())
+    stocks_to_evaluate = [stock for stock in agents.keys() if stock in available_stocks]
+    
+    # Main evaluation loop
     while not done:
-        # Get actions for each stock
         actions = {}
-        for stock in env.data_dict.keys():
-            state = states[stock]
+        for stock in stocks_to_evaluate:
+            state = states.get(stock, None)
+            # Skip if no state is returned for this stock
+            if state is None:
+                continue
+            
             action = agents[stock].evaluate(state)  # Use evaluate instead of act for deterministic actions
             actions[stock] = action
             actions_taken[stock].append(action)
         
-        # Take step in environment
+        # If no actions can be taken (no valid states), break out to avoid infinite looping
+        if not actions:
+            break
+        
+        # Take a step in the environment
         next_states, rewards, done = env.step_all(actions)
         
-        # Store portfolio values
-        for stock in env.data_dict.keys():
-            portfolio_values[stock].append(env.get_portfolio_value(stock))
+        # Update portfolio values for available stocks
+        for stock in stocks_to_evaluate:
+            if stock in next_states and next_states[stock] is not None:
+                portfolio_values[stock].append(env.get_portfolio_value(stock))
         
         states = next_states
     
-    # Restore original epsilon
+    # Restore original epsilon values
     for stock, agent in agents.items():
         agent.epsilon = original_epsilon[stock]
     
@@ -844,20 +896,27 @@ if __name__ == "__main__":
     
     # Train agents
     print("\nTraining agents...")
-    agents, training_history = train_agents(env, episodes=200)
+    agents, training_history, all_pretrained = train_agents(env, episodes=200)
     
     # Evaluate agents
     print("\nEvaluating agents...")
     portfolio_values, actions_taken = evaluate_agents(test_env, agents)
     
-    # Plot results similar to qlearn.py
+    # Plot results
     import matplotlib.pyplot as plt
     
+    # Plot evaluation results
     plt.figure(figsize=(15, 8))
     for stock in env.data_dict.keys():
         dates = test_data[stock].index
         values = portfolio_values[stock]
-        plt.plot(dates, values, label=f'{stock} Portfolio Value')
+
+        # Ensure that dates and values have the same length
+        min_len = min(len(dates), len(values))
+        aligned_dates = dates[:min_len]
+        aligned_values = values[:min_len]
+        
+        plt.plot(aligned_dates, aligned_values, label=f'{stock} Portfolio Value')
     
     plt.title('Portfolio Values During Test Period')
     plt.xlabel('Date')
@@ -866,9 +925,10 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.show()
     
-    # Plot training history with train_data
-    print("\nPlotting Training History...")
-    plot_trade_histories(training_history, train_data)
+    if not all_pretrained:
+        # Plot training history only if training actually happened
+        print("\nPlotting Training History...")
+        plot_trade_histories(training_history, train_data)
     
     # Prepare and plot evaluation history with test_data
     evaluation_history = {}
@@ -884,10 +944,14 @@ if __name__ == "__main__":
     # Print final performance metrics for evaluation
     print("\nFinal Performance Metrics (Evaluation):")
     for stock in portfolio_values:
-        final_value = portfolio_values[stock][-1]
-        initial_value = test_env.initial_balance
-        total_return = ((final_value - initial_value) / initial_value) * 100
-        print(f"{stock}:")
-        print(f"  Initial Balance: ${initial_value:.2f}")
-        print(f"  Final Value: ${final_value:.2f}")
-        print(f"  Total Return: {total_return:+.2f}%")
+        if len(portfolio_values[stock]) > 0:
+            final_value = portfolio_values[stock][-1]
+            initial_value = test_env.initial_balance
+            total_return = ((final_value - initial_value) / initial_value) * 100
+            print(f"{stock}:")
+            print(f"  Initial Balance: ${initial_value:.2f}")
+            print(f"  Final Value: ${final_value:.2f}")
+            print(f"  Total Return: {total_return:+.2f}%")
+        else:
+            # Handle case where no evaluation steps were taken for this stock
+            print(f"{stock}: No evaluation data available.")
