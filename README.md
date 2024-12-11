@@ -12,6 +12,8 @@ The project focuses on several major stocks and ETFs, including:
 
 By learning from past trends and behaviors, Tradewise provides a framework to evaluate the efficacy of reinforcement learning in financial markets.
 
+A report on our findings and approaches can be found [here](https://docs.google.com/document/d/1BtSBcB_ZCnNnnmPbodSXSRdAJO2Sbel8VlN2mRYX1O4/edit?usp=sharing).
+
 ---
 
 ## 🚀 Features
